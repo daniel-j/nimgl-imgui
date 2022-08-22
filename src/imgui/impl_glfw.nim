@@ -8,6 +8,9 @@
 
 import ../imgui, nimgl/glfw
 
+when defined(windows):
+  import nimgl/glfw/native
+
 type
   GlfwClientApi = enum
     igGlfwClientApiUnkown
@@ -20,8 +23,6 @@ var
   gTime: float64 = 0.0f
   gMouseJustPressed: array[5, bool]
   gMouseCursors: array[ImGuiMouseCursor.high.int32 + 1, GLFWCursor]
-
-  igGLFWCaptureMouse*: bool = true
 
   # Store previous callbacks so they can be chained
   gPrevMouseButtonCallback: GLFWMousebuttonFun = nil
@@ -117,8 +118,8 @@ proc igGlfwInit(window: GLFWwindow, installCallbacks: bool, clientApi: GlfwClien
     io.setClipboardTextFn = igGlfwSetClipboardText
     io.getClipboardTextFn = igGlfwGetClipboardText
   io.clipboardUserData = gWindow
-  # when defined windows:
-  #   io.imeWindowHandle = gWindow.getWin32Window()
+  when defined windows:
+    io.imeWindowHandle = gWindow.getWin32Window()
 
   gMouseCursors[ImGuiMouseCursor.Arrow.int32] = glfwCreateStandardCursor(GLFWArrowCursor)
   gMouseCursors[ImGuiMouseCursor.TextInput.int32] = glfwCreateStandardCursor(GLFWIbeamCursor)
@@ -142,10 +143,9 @@ proc igGlfwInitForOpenGL*(window: GLFWwindow, installCallbacks: bool): bool =
 
 proc igGlfwUpdateMousePosAndButtons() =
   let io = igGetIO()
-  if igGLFWCaptureMouse:
-    for i in 0 ..< io.mouseDown.len:
-      io.mouseDown[i] = gMouseJustPressed[i] or gWindow.getMouseButton(i.int32) != 0
-      gMouseJustPressed[i] = false
+  for i in 0 ..< io.mouseDown.len:
+    io.mouseDown[i] = gMouseJustPressed[i] or gWindow.getMouseButton(i.int32) != 0
+    gMouseJustPressed[i] = false
 
   let mousePosBackup = io.mousePos
   io.mousePos = ImVec2(x: -high(float32), y: -high(float32))

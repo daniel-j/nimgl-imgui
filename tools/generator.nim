@@ -1,7 +1,7 @@
 # Written by Leonardo Mariscal <leo@ldmd.mx>, 2019
 
 import strutils, json, strformat, tables,
-       algorithm, sets, ./utils
+       algorithm, sets, re, ./utils
 
 var enums: HashSet[string]
 var enumsCount: Table[string, int]
@@ -24,12 +24,22 @@ proc translateProc(name: string): string =
   var nameSplit = name.replace(";", "").split("(*)", 1)
   let procType = nameSplit[0].translateType()
 
+
   nameSplit[1] = nameSplit[1][1 ..< nameSplit[1].len - 1]
+  var isVarArgs = false
   var argsSplit = nameSplit[1].split(',')
   var argSeq: seq[tuple[name: string, kind: string]]
+  var unnamedArgCounter = 0
   for arg in argsSplit:
-    let argPieces = arg.rsplit(' ', 1)
-    var argName = argPieces[1]
+    let argPieces = arg.replace(" const", "").rsplit(' ', 1)
+    if argPieces[0] == "...":
+      isVarArgs = true
+      continue
+    var argName = if argPieces.len == 1:
+      inc(unnamedArgCounter)
+      "unamed_arg_{unnamedArgCounter}".fmt
+    else:
+      argPieces[1]
     var argType = argPieces[0]
     if argName.contains('*'):
       argType.add('*')
@@ -44,7 +54,10 @@ proc translateProc(name: string): string =
     result.add("{arg.name}: {arg.kind}, ".fmt)
   if argSeq.len > 0:
     result = result[0 ..< result.len - 2]
-  result.add("): {procType} {{.cdecl.}}".fmt)
+  if isVarArgs:
+    result.add("): {procType} {{.cdecl.}}".fmt)
+  else:
+    result.add("): {procType} {{.cdecl, varargs.}}".fmt)
 
 proc translateArray(name: string): tuple[size: string, name: string] =
   let nameSplit = name.rsplit('[', 1)
@@ -52,6 +65,8 @@ proc translateArray(name: string): tuple[size: string, name: string] =
   arraySize = arraySize[0 ..< arraySize.len - 1]
   if arraySize.contains("COUNT"):
     arraySize = $enumsCount[arraySize]
+  if arraySize == "(0xFFFF+1)/4096/8": # If more continue to appear automate it
+    arraySize = "2"
   result.size = arraySize
   result.name = nameSplit[0]
 
@@ -65,10 +80,12 @@ proc translateType(name: string): string =
   result = result.replace("unsigned ", "u")
   result = result.replace("signed ", "")
 
+
   var depth = result.count('*')
   result = result.replace(" ", "")
   result = result.replace("*", "")
   result = result.replace("&", "")
+  result = result.replace("const_charPtr", "ptr cstring")
 
   result = result.replace("int", "int32")
   result = result.replace("size_t", "uint") # uint matches pointer size just like size_t
@@ -79,7 +96,7 @@ proc translateType(name: string): string =
   result = result.replace("_Simple", "")
   if result.contains("char") and not result.contains("Wchar"):
     if result.contains("uchar"):
-      result = "cuchar"
+      result = "uint8"
     elif depth > 0:
       result = result.replace("char", "cstring")
       depth.dec
@@ -91,6 +108,9 @@ proc translateType(name: string): string =
     result = result.replace("void", "pointer")
     depth.dec
 
+  result = result.replace("ImBitArrayForNamedKeys", "ImU32")
+  result = result.replace("ImBitArray", "ImU32")
+  result = result.replace("ImGuiWindowPtr", "ptr ImGuiWindow")
   result = result.replace("ImS8", "int8") # Doing it a little verbose to avoid issues in the future.
   result = result.replace("ImS16", "int16")
   result = result.replace("ImS32", "int32")
@@ -106,6 +126,8 @@ proc translateType(name: string): string =
     result = result["ImVector_".len ..< result.len]
     result = "ImVector[{result}]".fmt
 
+  result = result.replace("ImChunkStream_T", "ImChunkStream")
+
   result = result.replace("ImGuiStorageImPair", "ImGuiStoragePair")
 
   for d in 0 ..< depth:
@@ -113,29 +135,39 @@ proc translateType(name: string): string =
     if result == "ptr ptr ImDrawList":
       result = "UncheckedArray[ptr ImDrawList]"
 
+  if result == "":
+    result = "void"
+
 proc genEnums(output: var string) =
   let file = readFile("src/imgui/private/cimgui/generator/output/structs_and_enums.json")
   let data = file.parseJson()
 
   output.add("\n# Enums\ntype\n")
 
+  var tableNamedKeys: Table[string, int]
+
   for name, obj in data["enums"].pairs:
-    let enumName = name[0 ..< name.len - 1]
+    var enumName = name
+    if enumName.endsWith("_"):
+      enumName = name[0 ..< name.len - 1]
     output.add("  {enumName}* {{.pure, size: int32.sizeof.}} = enum\n".fmt)
     enums.incl(enumName)
     var table: Table[int, string]
     for data in obj:
       var dataName = data["name"].getStr()
+      let dataValue = data["calc_value"].getInt()
       dataName = dataName.replace("__", "_")
-      dataName = dataName.split("_")[1]
+      dataName = dataName.split("_", 1)[1]
       if dataName.endsWith("_"):
         dataName = dataName[0 ..< dataName.len - 1]
+      if dataName.match(re"^[0-9]"):
+        dataName = "`\"" & dataName & "\"`"
       if dataName == "COUNT":
         enumsCount[data["name"].getStr()] = data["calc_value"].getInt()
         continue
-      let dataValue = data["calc_value"].getInt()
       if table.hasKey(dataValue):
-        echo "Enum {enumName}.{dataName} already exists as {enumName}.{table[dataValue]} with value {dataValue} skipping...".fmt
+        echo "Notice: Enum {enumName}.{dataName} already exists as {enumName}.{table[dataValue]} with value {dataValue}, use constant {enumName}_{dataName} to access it".fmt
+        tableNamedKeys[enumName & "_" & dataName] = dataValue
         continue
       table[dataValue] = dataName
 
@@ -147,6 +179,11 @@ proc genEnums(output: var string) =
     for k, v in tableOrder.pairs:
       output.add("    {v} = {k}\n".fmt)
 
+  if tableNamedKeys.len > 0:
+    output.add("\n# Duplicate enums as consts\n")
+    for k, v in tableNamedKeys.pairs:
+      output.add("const {k}* = {v}\n".fmt)
+
 proc genTypeDefs(output: var string) =
   # Must be run after genEnums
   let file = readFile("src/imgui/private/cimgui/generator/output/typedefs_dict.json")
@@ -157,7 +194,7 @@ proc genTypeDefs(output: var string) =
   for name, obj in data.pairs:
     let ignorable = ["const_iterator", "iterator", "value_type", "ImS8",
                      "ImS16", "ImS32", "ImS64", "ImU8", "ImU16", "ImU32",
-                     "ImU64"]
+                     "ImU64", "ImBitArrayForNamedKeys"]
     if obj.getStr().startsWith("struct") or enums.contains(name) or ignorable.contains(name):
       continue
     output.add("  {name}* = {obj.getStr().translateType()}\n".fmt)
@@ -172,11 +209,20 @@ proc genTypes(output: var string) =
   output.add(notDefinedStructs)
 
   for name, obj in data["structs"].pairs:
-    if name == "Pair" or name == "ImGuiStoragePair":
+    if name == "Pair" or name == "ImGuiStoragePair" or name == "ImGuiStyleMod" or name == "ImGuiInputEvent":
       continue
+
+    if name == "ImDrawChannel":
+      output.add("  ImDrawChannel* {.importc: \"ImDrawChannel\", imgui_header.} = ptr object\n")
+      continue
+
     output.add("  {name}* {{.importc: \"{name}\", imgui_header.}} = object\n".fmt)
     for member in obj:
       var memberName = member["name"].getStr()
+      if memberName == "Ptr":
+        memberName = "`ptr`"
+      if memberName == "Type":
+        memberName = "`type`"
       var memberImGuiName = "{{.importc: \"{memberName}\".}}".fmt
       if memberName.startsWith("_"):
         memberName = memberName[1 ..< memberName.len]
@@ -192,7 +238,17 @@ proc genTypes(output: var string) =
           output.add("    {memberName}* {memberImGuiName}: {member[\"type\"].getStr().translateType()}\n".fmt)
         else:
           # Assuming all template_type containers are ImVectors
-          output.add("    {memberName}* {memberImGuiName}: ImVector[{member[\"template_type\"].getStr().translateType()}]\n".fmt)
+          var templateType = member["template_type"].getStr()
+          if templateType == "ImGui*OrIndex":
+            templateType = "ImGuiPtrOrIndex"
+          templateType = templateType.translateType()
+
+          if templateType == "ImGuiTabBar": # Hope I don't regret this hardocoded if
+            output.add("    {memberName}* {memberImGuiName}: ptr ImPool\n".fmt)
+          elif templateType == "ImGuiColumns":
+            output.add("    {memberName}* {memberImGuiName}: ImVectorImGuiColumns\n".fmt)
+          else:
+            output.add("    {memberName}* {memberImGuiName}: ImVector[{templateType}]\n".fmt)
         continue
 
       let arrayData = memberName.translateArray()
@@ -205,10 +261,12 @@ proc genProcs(output: var string) =
   output.add("\n{preProcs}\n".fmt)
 
   for name, obj in data.pairs:
+    var isNonUDT = false
+    var nonUDTNumber = 0
     for variation in obj:
       if variation.contains("nonUDT"):
-        # If you need UDT support please let me know, and some examples.
-        continue
+        nonUDTNumber.inc
+        isNonUDT = true
       if blackListProc.contains(variation["cimguiname"].getStr()):
         continue
 
@@ -222,6 +280,11 @@ proc genProcs(output: var string) =
       else:
         funcname = variation["cimguiname"].getStr()
         #funcname = funcname.rsplit("_", 1)[1]
+
+      if isNonUDT:
+        funcname = funcname & "NonUDT"
+        if nonUDTNumber != 1:
+          funcname = funcname & $nonUDTNumber
 
       if variation.contains("constructor"):
         if funcname.startsWith("ImVector"):
@@ -251,11 +314,20 @@ proc genProcs(output: var string) =
         if variation.contains("defaults") and variation["defaults"].kind == JObject and
            variation["defaults"].contains(argName):
           argDefault = variation["defaults"][argName].getStr()
+          argDefault = argDefault.replace("4294967295", "high(uint32)")
           argDefault = argDefault.replace("(((ImU32)(255)<<24)|((ImU32)(255)<<16)|((ImU32)(255)<<8)|((ImU32)(255)<<0))", "high(uint32)")
+          argDefault = argDefault.replace("(((ImU32)(255)<<24)|((ImU32)(0)<<16)|((ImU32)(0)<<8)|((ImU32)(255)<<0))", "4278190335")
+          argDefault = argDefault.replace("4278190335", "4278190335'u32")
           argDefault = argDefault.replace("FLT_MAX", "high(float32)")
           argDefault = argDefault.replace("((void*)0)", "nil")
+          argDefault = argDefault.replace("NULL", "nil")
+          argDefault = argDefault.replace("-FLT_MIN", "0")
+          argDefault = argDefault.replace("~0", "-1")
           argDefault = argDefault.replace("sizeof(float)", "sizeof(float32).int32")
           argDefault = argDefault.replace("ImDrawCornerFlags_All", "ImDrawCornerFlags.All")
+          argDefault = argDefault.replace("ImGuiPopupPositionPolicy_Default", "ImGuiPopupPositionPolicy.Default")
+          argDefault = argDefault.replace("ImGuiPopupFlags_None", "ImGuiPopupFlags.None")
+          argDefault = argDefault.replace("ImGuiNavHighlightFlags_TypeDefault", "ImGuiNavHighlightFlags.TypeDefault")
 
           if argDefault.startsWith("ImVec"):
             let letters = ['x', 'y', 'z', 'w']
@@ -265,7 +337,7 @@ proc genProcs(output: var string) =
               argDefault.add("{letters[p]}: {argPices[p]}, ".fmt)
             argDefault = argDefault[0 ..< argDefault.len - 2] & ")"
 
-          if argType.startsWith("ImGui") and not argType.contains("Callback"):
+          if (argType.startsWith("ImGui") or argType.startsWith("Im")) and not argType.contains("Callback") and not argType.contains("ImVec"): # Ugly hack, should fix later
             argDefault.add(".{argType}".fmt)
 
         if argName.startsWith("_"):
@@ -303,6 +375,8 @@ proc genProcs(output: var string) =
         argRet = variation["ret"].getStr().translateType()
       if argRet == "T" or argRet == "ptr T":
         isGeneric = true
+      if argRet == "explicit":
+        argRet = "ptr ImVec2ih" # Ugly solution for a temporal problem
 
       output.add(if isGeneric: "[T](" else: "(")
       output.add(argsOutput)
@@ -325,7 +399,7 @@ proc genProcs(output: var string) =
       if outSplit[1] == outSplit[2] or outSplit[1].split('{')[0] == outSplit[2].split('{')[0]:
         output = "{outSplit[0]}\n{outSplit[1]}\n".fmt
 
-  output.add("\n{.pop.}\n")
+  output.add("\n{postProcs}\n".fmt)
 
 proc igGenerate*() =
   var output = srcHeader

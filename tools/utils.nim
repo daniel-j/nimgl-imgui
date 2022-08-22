@@ -29,8 +29,6 @@ proc currentSourceDir(): string {.compileTime.} =
   result = result[0 ..< result.rfind("/")]
 
 {.passC: "-I" & currentSourceDir() & "/imgui/private/cimgui" & " -DIMGUI_DISABLE_OBSOLETE_FUNCTIONS=1".}
-when defined(linux):
-  {.passL: "-Xlinker -rpath .".}
 
 when not defined(cpp) or defined(cimguiDLL):
   when defined(windows):
@@ -39,14 +37,17 @@ when not defined(cpp) or defined(cimguiDLL):
     const imgui_dll* = "cimgui.dylib"
   else:
     const imgui_dll* = "cimgui.so"
+    when defined(linux):
+      {.passL: "-Xlinker -rpath .".}
   {.passC: "-DCIMGUI_DEFINE_ENUMS_AND_STRUCTS".}
   {.pragma: imgui_header, header: "cimgui.h".}
 else:
   {.compile: "imgui/private/cimgui/cimgui.cpp",
     compile: "imgui/private/cimgui/imgui/imgui.cpp",
     compile: "imgui/private/cimgui/imgui/imgui_draw.cpp",
-    compile: "imgui/private/cimgui/imgui/imgui_demo.cpp",
-    compile: "imgui/private/cimgui/imgui/imgui_widgets.cpp".}
+    compile: "imgui/private/cimgui/imgui/imgui_tables.cpp",
+    compile: "imgui/private/cimgui/imgui/imgui_widgets.cpp",
+    compile: "imgui/private/cimgui/imgui/imgui_demo.cpp".}
   {.pragma: imgui_header, header: currentSourceDir() & "/imgui/private/ncimgui.h".}
 """
 
@@ -54,7 +55,13 @@ const notDefinedStructs* = """
   ImVector*[T] = object # Should I importc a generic?
     size* {.importc: "Size".}: int32
     capacity* {.importc: "Capacity".}: int32
-    data* {.importc: "Data".}: UncheckedArray[T]
+    data* {.importc: "Data".}: ptr UncheckedArray[T]
+  ImGuiStyleModBackup* {.union.} = object
+    backup_int* {.importc: "BackupInt".}: int32 # Breaking naming convetion to denote "low level"
+    backup_float* {.importc: "BackupFloat".}: float32
+  ImGuiStyleMod* {.importc: "ImGuiStyleMod", imgui_header.} = object
+    varIdx* {.importc: "VarIdx".}: ImGuiStyleVar
+    backup*: ImGuiStyleModBackup
   ImGuiStoragePairData* {.union.} = object
     val_i* {.importc: "val_i".}: int32 # Breaking naming convetion to denote "low level"
     val_f* {.importc: "val_f".}: float32
@@ -69,16 +76,44 @@ const notDefinedStructs* = """
   ImPair* {.importc: "Pair", imgui_header.} = object
     key* {.importc: "key".}: ImGuiID
     data*: ImPairData
-  ImDrawListSharedData* {.importc: "ImDrawListSharedData", imgui_header.} = object
-  ImGuiContext* {.importc: "ImGuiContext", imgui_header.} = object
+  ImGuiInputEventData* {.union.} = object
+    mousePos*: ImGuiInputEventMousePos
+    mouseWheel*: ImGuiInputEventMouseWheel
+    mouseButton*: ImGuiInputEventMouseButton
+    key*: ImGuiInputEventKey
+    text*: ImGuiInputEventText
+    appFocused*: ImGuiInputEventAppFocused
+  ImGuiInputEvent* {.importc: "ImGuiInputEvent", imgui_header.} = object
+    `type`* {.importc: "`type`".}: ImGuiInputEventType
+    source* {.importc: "Source".}: ImGuiInputSource
+    data*: ImGuiInputEventData
+    addedByTestEngine* {.importc: "AddedByTestEngine".}: bool
+
+  # Undefined data types in cimgui
+
+  ImDrawListPtr* = object
+  ImChunkStream* = ptr object
+  ImPool* = object
+  ImSpanAllocator* = object # A little lost here. It is referenced in imgui_internal.h
+  ImSpan* = object # ^^
+  ImVectorImGuiColumns* {.importc: "ImVector_ImGuiColumns".} = object
+  ImGuiDockRequest* = object
+  ImGuiDockNodeSettings* = object
+  #
 """
 
 const preProcs* = """
 # Procs
+{.push warning[HoleEnumConv]: off.}
 when not defined(cpp) or defined(cimguiDLL):
   {.push dynlib: imgui_dll, cdecl, discardable.}
 else:
   {.push nodecl, discardable.}
+"""
+
+const postProcs* = """
+{.pop.} # push dynlib / nodecl, etc...
+{.pop.} # push warning[HoleEnumConv]: off
 """
 
 let reservedWordsDictionary* = [
