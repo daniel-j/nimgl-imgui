@@ -34,8 +34,8 @@ proc igGlfwGetClipboardText(ctx: ptr ImGuiContext): cstringconst {.cdecl.} =
   return getClipboardString(nil)
 
 proc igGlfwSetClipboardText(ctx: ptr ImGuiContext, text: cstringconst) {.cdecl.} =
-  echo text
-  setClipboardString(nil, text)
+  when not defined(emscripten):
+    setClipboardString(nil, text)
 
 proc igGlfwMouseCallback*(window: GLFWWindow, button: int32, action: int32, mods: int32) {.cdecl.} =
   if gPrevMouseButtonCallback != nil:
@@ -175,10 +175,11 @@ proc keyToImGuiKey(key: int32): ImGuiKey =
 
 proc updateKeyModifiers(window: GLFWWindow) =
   let io = igGetIO()
-  io.addKeyEvent(ImGuiKey.Ctrl, window.getKey(GLFWKey.LeftControl) == GlfwPress or window.getKey(GLFWKey.RightControl) == GlfwPress)
-  io.addKeyEvent(ImGuiKey.Shift, window.getKey(GLFWKey.LeftShift) == GlfwPress or window.getKey(GLFWKey.RightShift) == GlfwPress)
-  io.addKeyEvent(ImGuiKey.Alt, window.getKey(GLFWKey.LeftAlt) == GlfwPress or window.getKey(GLFWKey.RightAlt) == GlfwPress)
-  io.addKeyEvent(ImGuiKey.Super, window.getKey(GLFWKey.LeftSuper) == GlfwPress or window.getKey(GLFWKey.RightSuper) == GlfwPress)
+  when not defined(emscripten):
+    io.addKeyEvent(ImGuiKey.Ctrl, window.getKey(GLFWKey.LeftControl) == GlfwPress or window.getKey(GLFWKey.RightControl) == GlfwPress)
+    io.addKeyEvent(ImGuiKey.Shift, window.getKey(GLFWKey.LeftShift) == GlfwPress or window.getKey(GLFWKey.RightShift) == GlfwPress)
+    io.addKeyEvent(ImGuiKey.Alt, window.getKey(GLFWKey.LeftAlt) == GlfwPress or window.getKey(GLFWKey.RightAlt) == GlfwPress)
+    io.addKeyEvent(ImGuiKey.Super, window.getKey(GLFWKey.LeftSuper) == GlfwPress or window.getKey(GLFWKey.RightSuper) == GlfwPress)
 
 proc translateUntranslatedKey(key: int32, scancode: int32): int32 =
   when declared(glfwGetKeyName):
@@ -187,7 +188,8 @@ proc translateUntranslatedKey(key: int32, scancode: int32): int32 =
     let prevErrorCallback = glfwSetErrorCallback(nil)
     let keyName = glfwGetKeyName(key, scancode)
     discard glfwSetErrorCallback(prevErrorCallback)
-    discard glfwGetError(nil)
+    when not defined(emscripten):
+      discard glfwGetError(nil)
     if keyName.len == 1 and keyName[0] != '\0':
       var key = key
       const char_names = "`-=[]\\,;'./"
@@ -218,8 +220,9 @@ proc igGlfwKeyCallback*(window: GLFWWindow, keycode: int32, scancode: int32, act
 
   let io = igGetIO()
   let imguiKey = keyToImguiKey(keycode)
-  io.addKeyEvent(imguiKey, action == GLFW_PRESS)
-  io.setKeyEventNativeData(imguiKey, keycode, scancode) # To support legacy indexing (<1.87 user code)
+  when not defined(emscripten):
+    io.addKeyEvent(imguiKey, action == GLFW_PRESS)
+    io.setKeyEventNativeData(imguiKey, keycode, scancode) # To support legacy indexing (<1.87 user code)
 
 proc igGlfwCharCallback*(window: GLFWWindow, code: uint32) {.cdecl.} =
   if gPrevCharCallback != nil:
