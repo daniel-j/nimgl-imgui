@@ -24,7 +24,6 @@ proc translateProc(name: string): string =
   var nameSplit = name.replace(";", "").split("(*)", 1)
   let procType = nameSplit[0].translateType()
 
-
   nameSplit[1] = nameSplit[1][1 ..< nameSplit[1].len - 1]
   var isVarArgs = false
   var argsSplit = nameSplit[1].split(',')
@@ -54,16 +53,21 @@ proc translateProc(name: string): string =
     result.add("{arg.name}: {arg.kind}, ".fmt)
   if argSeq.len > 0:
     result = result[0 ..< result.len - 2]
+
+  result.add(")")
+  if procType != "void":
+    result.add(": ")
+    result.add(procType)
   if isVarArgs:
-    result.add("): {procType} {{.cdecl.}}".fmt)
+    result.add(" {{.cdecl.}}".fmt)
   else:
-    result.add("): {procType} {{.cdecl, varargs.}}".fmt)
+    result.add(" {{.cdecl, varargs.}}".fmt)
 
 proc translateArray(name: string): tuple[size: string, name: string] =
   let nameSplit = name.rsplit('[', 1)
   var arraySize = nameSplit[1]
   arraySize = arraySize[0 ..< arraySize.len - 1]
-  if arraySize.contains("COUNT"):
+  if arraySize.contains("COUNT") and enumsCount.contains(arraySize):
     arraySize = $enumsCount[arraySize]
   if arraySize == "(0xFFFF+1)/4096/8": # If more continue to appear automate it
     arraySize = "2"
@@ -73,8 +77,12 @@ proc translateArray(name: string): tuple[size: string, name: string] =
 proc translateType(name: string): string =
   if name.contains("(") and name.contains(")"):
     return name.translateProc()
-  if name == "const char* const[]":
-    return "ptr cstring"
+  if name == "const char* const[]" or name == "const char**":
+    return "ptr cstringconst"
+  elif name == "const char*":
+    return "cstringconst"
+  elif name == "char*":
+    return "cstring"
 
   result = name.replace("const ", "")
   result = result.replace("unsigned ", "u")
@@ -96,7 +104,6 @@ proc translateType(name: string): string =
     if result.contains("uchar"):
       result = "uint8"
     elif depth > 0:
-      result = result.replace("char", "cstring")
       depth.dec
       if result.startsWith("u"):
         result = result[1 ..< result.len]
@@ -118,7 +125,6 @@ proc translateType(name: string): string =
   result = result.replace("ImU32", "uint32")
   result = result.replace("ImU64", "uint64")
   result = result.replace("Pair", "ImPair")
-  result = result.replace("ImFontPtr", "ptr ImFont")
 
   if result.startsWith("ImVector_"):
     result = result["ImVector_".len ..< result.len]
@@ -127,6 +133,9 @@ proc translateType(name: string): string =
   result = result.replace("ImChunkStream_T", "ImChunkStream")
 
   result = result.replace("ImGuiStorageImPair", "ImGuiStoragePair")
+
+  if result.endsWith("Ptr"):
+    result = "ptr " & result[0..^4]
 
   for d in 0 ..< depth:
     result = "ptr " & result
@@ -155,12 +164,15 @@ proc genEnums(output: var string) =
       var dataName = data["name"].getStr()
       let dataValue = data["calc_value"].getInt()
       dataName = dataName.replace("__", "_")
+      if dataName.contains("NamedKey") or dataName == "ImGuiKey_KeysData_SIZE":
+        tableNamedKeys[dataName] = dataValue
+        continue
       dataName = dataName.split("_", 1)[1]
       if dataName.endsWith("_"):
         dataName = dataName[0 ..< dataName.len - 1]
       if dataName.match(re"^[0-9]"):
-        dataName = "`\"" & dataName & "\"`"
-      if dataName == "COUNT":
+        dataName = "`" & dataName & "`"
+      if dataName.contains("COUNT"):
         enumsCount[data["name"].getStr()] = data["calc_value"].getInt()
         continue
       if table.hasKey(dataValue):
@@ -250,7 +262,8 @@ proc genTypes(output: var string) =
         continue
 
       let arrayData = memberName.translateArray()
-      output.add("    {arrayData[1]}* {memberImGuiName}: array[{arrayData[0]}, {member[\"type\"].getStr().translateType()}]\n".fmt)
+      let memberType = member["type"].getStr().translateType()
+      output.add("    {arrayData[1]}* {memberImGuiName}: array[{arrayData[0]}, {memberType}]\n".fmt)
 
 proc genProcs(output: var string) =
   let file = readFile("src/imgui/private/cimgui/generator/output/definitions.json")
@@ -322,10 +335,7 @@ proc genProcs(output: var string) =
           argDefault = argDefault.replace("-FLT_MIN", "0")
           argDefault = argDefault.replace("~0", "-1")
           argDefault = argDefault.replace("sizeof(float)", "sizeof(float32).int32")
-          argDefault = argDefault.replace("ImDrawCornerFlags_All", "ImDrawCornerFlags.All")
-          argDefault = argDefault.replace("ImGuiPopupPositionPolicy_Default", "ImGuiPopupPositionPolicy.Default")
-          argDefault = argDefault.replace("ImGuiPopupFlags_None", "ImGuiPopupFlags.None")
-          argDefault = argDefault.replace("ImGuiNavHighlightFlags_TypeDefault", "ImGuiNavHighlightFlags.TypeDefault")
+          argDefault = argDefault.replace("_", ".")
 
           if argDefault.startsWith("ImVec"):
             let letters = ['x', 'y', 'z', 'w']
@@ -335,8 +345,8 @@ proc genProcs(output: var string) =
               argDefault.add("{letters[p]}: {argPices[p]}, ".fmt)
             argDefault = argDefault[0 ..< argDefault.len - 2] & ")"
 
-          if (argType.startsWith("ImGui") or argType.startsWith("Im")) and not argType.contains("Callback") and not argType.contains("ImVec"): # Ugly hack, should fix later
-            argDefault.add(".{argType}".fmt)
+          if (argType.startsWith("ImGui") or argType.startsWith("Im")) and not argType.contains("Callback") and not argType.contains("ImVec") and not argDefault.contains("."): # Ugly hack, should fix later
+            argDefault = "{argType}({argDefault})".fmt
 
         if argName.startsWith("_"):
           argName = argName[1 ..< argName.len]
@@ -349,8 +359,6 @@ proc genProcs(output: var string) =
 
         if argType.contains('[') and not argType.contains("ImVector[") and not argType.contains("UncheckedArray["):
           let arrayData = argType.translateArray()
-          if arrayData[1].contains("cstringconst"):
-            echo "{name}\n{obj.pretty}".fmt
           argType = "var array[{arrayData[0]}, {arrayData[1]}]".fmt
         argType = argType.replace(" {.cdecl.}", "")
 
@@ -378,8 +386,10 @@ proc genProcs(output: var string) =
 
       output.add(if isGeneric: "[T](" else: "(")
       output.add(argsOutput)
-      output.add("): ")
-      output.add(argRet)
+      output.add(")")
+      if argRet != "void":
+        output.add(": ")
+        output.add(argRet)
 
       # Pragmas
       var pragmaName = variation["cimguiname"].getStr()

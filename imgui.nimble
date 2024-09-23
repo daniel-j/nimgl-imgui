@@ -1,8 +1,8 @@
 # Package
 
-version     = "1.88"
+version     = "1.91.1"
 author      = "Leonardo Mariscal"
-description = "ImGui bindings for Nim"
+description = "Dear ImGui bindings for Nim"
 license     = "MIT"
 srcDir      = "src"
 skipDirs    = @["tests"]
@@ -10,6 +10,14 @@ skipDirs    = @["tests"]
 # Dependencies
 
 requires "nim >= 1.0.0" # 1.0.0 promises that it will have backward compatibility
+
+task cimgui, "Compiles cimgui":
+  rmDir("src/imgui/private/cimgui/build")
+  exec("cmake -S src/imgui/private/cimgui -B src/imgui/private/cimgui/build -DIMGUI_STATIC=no")
+  exec("cmake --build src/imgui/private/cimgui/build")
+
+before install:
+  cimguiTask()
 
 task gen, "Generate bindings from source":
   exec("nim c -r tools/generator.nim")

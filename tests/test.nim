@@ -21,7 +21,6 @@ proc main() =
   assert glInit()
 
   let context = igCreateContext()
-  #let io = igGetIO()
 
   assert igGlfwInitForOpenGL(w, true)
   assert igOpenGL3Init()

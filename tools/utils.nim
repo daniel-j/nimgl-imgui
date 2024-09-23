@@ -22,7 +22,10 @@ const srcHeader* = """
 ## HACK: If you are targeting Windows, be sure to compile the cimgui dll with
 ## visual studio and not with mingw.
 
-import strutils
+import std/strutils
+import imgui/helpers
+
+export helpers
 
 proc currentSourceDir(): string {.compileTime.} =
   result = currentSourcePath().replace("\\", "/")
@@ -31,14 +34,8 @@ proc currentSourceDir(): string {.compileTime.} =
 {.passC: "-I" & currentSourceDir() & "/imgui/private/cimgui" & " -DIMGUI_DISABLE_OBSOLETE_FUNCTIONS=1".}
 
 when not defined(cpp) or defined(cimguiDLL):
-  when defined(windows):
-    const imgui_dll* = "cimgui.dll"
-  elif defined(macosx):
-    const imgui_dll* = "cimgui.dylib"
-  else:
-    const imgui_dll* = "cimgui.so"
-    when defined(linux):
-      {.passL: "-Xlinker -rpath .".}
+  when defined(linux):
+      {.passL: "-Wl,-rpath,'$ORIGIN'".}
   {.passC: "-DCIMGUI_DEFINE_ENUMS_AND_STRUCTS".}
   {.pragma: imgui_header, header: "cimgui.h".}
 else:
@@ -49,6 +46,9 @@ else:
     compile: "imgui/private/cimgui/imgui/imgui_widgets.cpp",
     compile: "imgui/private/cimgui/imgui/imgui_demo.cpp".}
   {.pragma: imgui_header, header: currentSourceDir() & "/imgui/private/ncimgui.h".}
+
+# Fix for using const char* in C
+type cstringconst* {.importc: "const char*".} = cstring
 """
 
 const notDefinedStructs* = """
@@ -122,7 +122,7 @@ let reservedWordsDictionary* = [
 let blackListProc* = [ "" ]
 
 const cherryTheme* = """
-proc igStyleColorsCherry*(dst: ptr ImGuiStyle = nil): void =
+proc igStyleColorsCherry*(dst: ptr ImGuiStyle = nil) =
   ## To conmemorate this bindings this style is included as a default.
   ## Style created originally by r-lyeh
   var style = igGetStyle()
